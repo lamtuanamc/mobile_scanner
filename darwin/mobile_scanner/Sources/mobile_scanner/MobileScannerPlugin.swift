@@ -468,8 +468,11 @@ public class MobileScannerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler,
 
 
 
-        // calls captureOutput()
-        self.videoDataOutput.setSampleBufferDelegate(self, queue: DispatchQueue.main)
+        // calls captureOutput() on a dedicated serial background queue instead of
+        // the main queue: delivering frames on main lets heavy Flutter main-thread
+        // work starve the preview texture, which showed up as a permanent black
+        // preview on some iOS devices while the overlay still rendered.
+        self.videoDataOutput.setSampleBufferDelegate(self, queue: DispatchQueue(label: "video.queue"))
         if captureSession!.canAddOutput(self.videoDataOutput) {
             captureSession!.addOutput(self.videoDataOutput)
         } else {
