@@ -97,8 +97,13 @@ class MobileScanner(
     private var videoCapture: VideoCapture<Recorder>? = null
     private lateinit var outputDirectory: File
     private var currentRecording: Recording? = null
+    private var recordingStopping = false
+    private val recordingStopCallbacks = mutableListOf<() -> Unit>()
 
     companion object {
+        /// Error code reported when a recording could not be started at all.
+        const val RECORDING_NOT_STARTED = -1
+
         // Configure the `ProcessCameraProvider` to only log errors.
         // This prevents the informational log spam from CameraX.
         private fun configureCameraProcessProvider() {
@@ -361,37 +366,85 @@ class MobileScanner(
     }
 
     fun startRecording(id: String?, recordStateCallback: RecordStateCallback, videoRecordCompletionCallback: VideoRecordCompletionCallback) {
-        val videoFile = File(outputDirectory, "${System.currentTimeMillis()}.mp4")
-        val outputOptions = FileOutputOptions.Builder(videoFile).build()
-        val recording = videoCapture?.output?.prepareRecording(activity.applicationContext, outputOptions)?.apply {
-            withAudioEnabled()
-        }?.start(ContextCompat.getMainExecutor(activity.applicationContext)) { recordEvent ->
-            when (recordEvent) {
-                is VideoRecordEvent.Start -> {
-                    Log.d("TAG", "Video recording started")
-                    recordStateCallback(1)
-                }
-                is VideoRecordEvent.Finalize -> {
-                    if (recordEvent.hasError()) {
-                        Log.e("TAG", "Video recording error: ${recordEvent.error}")
-//                        result.error("VIDEO_RECORDING_ERROR", recordEvent.error.toString(), null)
-                        videoRecordCompletionCallback(null, id, recordEvent.error)
-                    } else {
-                        Log.d("TAG", "Video recording succeeded: ${recordEvent.outputResults.outputUri}")
-                        recordEvent.outputResults.outputUri.path?.let {
+        // Includes pending and finalizing recordings, before/after the Start event.
+        if (currentRecording != null) {
+            videoRecordCompletionCallback(null, id, RECORDING_NOT_STARTED)
+            return
+        }
+        var recording: Recording? = null
+        try {
+            val videoFile = File(outputDirectory, "${java.util.UUID.randomUUID()}.mp4")
+            val outputOptions = FileOutputOptions.Builder(videoFile).build()
+            recording = videoCapture?.output?.prepareRecording(activity.applicationContext, outputOptions)?.apply {
+                withAudioEnabled()
+            }?.start(ContextCompat.getMainExecutor(activity.applicationContext)) { recordEvent ->
+                when (recordEvent) {
+                    is VideoRecordEvent.Start -> {
+                        Log.d("TAG", "Video recording started")
+                        recordStateCallback(1)
+                    }
+                    is VideoRecordEvent.Finalize -> {
+                        val error = recordEvent.error
+                        if (!recordEvent.hasError()) {
+                            Log.d("TAG", "Video recording succeeded: ${recordEvent.outputResults.outputUri}")
                             videoRecordCompletionCallback(
-                                it, id, null)
+                                recordEvent.outputResults.outputUri.path ?: videoFile.absolutePath, id, null)
+                        } else if (!isOutputInvalid(error) && videoFile.exists() && videoFile.length() > 0) {
+                            // Preserve potentially recoverable footage, including unknown
+                            // errors. The error tells consumers playback may still fail.
+                            Log.w("TAG", "Video recording finalized with error $error, output kept")
+                            videoRecordCompletionCallback(videoFile.absolutePath, id, error)
+                        } else {
+                            Log.e("TAG", "Video recording error: $error", recordEvent.cause)
+                            if (videoFile.exists()) {
+                                videoFile.delete()
+                            }
+                            videoRecordCompletionCallback(null, id, error)
+                        }
+                        if (currentRecording === recording) {
+                            currentRecording = null
+                            recordingStopping = false
+                            // Match iOS: the file precedes the final state and method reply.
+                            recordStateCallback(0)
+                            val callbacks = recordingStopCallbacks.toList()
+                            recordingStopCallbacks.clear()
+                            callbacks.forEach { it() }
                         }
                     }
                 }
             }
+        } catch (e: Exception) {
+            Log.e("TAG", "Failed to start video recording", e)
         }
-        currentRecording = recording
+        if (recording == null) {
+            // The camera is not bound (or start failed), so no Finalize event will ever come.
+            videoRecordCompletionCallback(null, id, RECORDING_NOT_STARTED)
+            recordStateCallback(0)
+        } else {
+            currentRecording = recording
+        }
     }
 
-    fun stopRecording(recordStateCallback: RecordStateCallback) {
-        currentRecording?.stop()
-        recordStateCallback(0)
+    /// Only discard outputs CameraX documents as invalid, not unknown errors.
+    private fun isOutputInvalid(error: Int): Boolean = when (error) {
+        VideoRecordEvent.Finalize.ERROR_ENCODING_FAILED,
+        VideoRecordEvent.Finalize.ERROR_RECORDER_ERROR,
+        VideoRecordEvent.Finalize.ERROR_NO_VALID_DATA,
+        VideoRecordEvent.Finalize.ERROR_INVALID_OUTPUT_OPTIONS -> true
+        else -> false
+    }
+
+    fun stopRecording(onStopped: () -> Unit) {
+        val recording = currentRecording
+        if (recording == null) {
+            onStopped()
+            return
+        }
+        recordingStopCallbacks.add(onStopped)
+        if (!recordingStopping) {
+            recordingStopping = true
+            recording.stop()
+        }
     }
 
     /**
