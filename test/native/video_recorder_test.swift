@@ -56,6 +56,55 @@ struct VideoRecorderTests {
         return sample!
     }
 
+    static func audioSample(_ index: Int64) -> CMSampleBuffer {
+        let sampleCount = 1470
+        var description = AudioStreamBasicDescription(
+            mSampleRate: 44100,
+            mFormatID: kAudioFormatLinearPCM,
+            mFormatFlags: kAudioFormatFlagIsSignedInteger | kAudioFormatFlagIsPacked,
+            mBytesPerPacket: 2,
+            mFramesPerPacket: 1,
+            mBytesPerFrame: 2,
+            mChannelsPerFrame: 1,
+            mBitsPerChannel: 16,
+            mReserved: 0
+        )
+        var format: CMAudioFormatDescription?
+        check(CMAudioFormatDescriptionCreate(allocator: kCFAllocatorDefault,
+                                             asbd: &description,
+                                             layoutSize: 0, layout: nil,
+                                             magicCookieSize: 0, magicCookie: nil,
+                                             extensions: nil,
+                                             formatDescriptionOut: &format) == noErr,
+              "Create audio format")
+        var blockBuffer: CMBlockBuffer?
+        check(CMBlockBufferCreateWithMemoryBlock(allocator: kCFAllocatorDefault,
+                                                memoryBlock: nil,
+                                                blockLength: sampleCount * 2,
+                                                blockAllocator: kCFAllocatorDefault,
+                                                customBlockSource: nil,
+                                                offsetToData: 0,
+                                                dataLength: sampleCount * 2,
+                                                flags: 0,
+                                                blockBufferOut: &blockBuffer) == noErr,
+              "Create audio buffer")
+        check(CMBlockBufferFillDataBytes(with: 0, blockBuffer: blockBuffer!,
+                                         offsetIntoDestination: 0,
+                                         dataLength: sampleCount * 2) == noErr,
+              "Fill audio buffer")
+        var sample: CMSampleBuffer?
+        check(CMAudioSampleBufferCreateReadyWithPacketDescriptions(
+            allocator: kCFAllocatorDefault,
+            dataBuffer: blockBuffer!,
+            formatDescription: format!,
+            sampleCount: sampleCount,
+            presentationTimeStamp: CMTime(value: index * Int64(sampleCount), timescale: 44100),
+            packetDescriptions: nil,
+            sampleBufferOut: &sample
+        ) == noErr, "Create audio sample")
+        return sample!
+    }
+
     static func main() throws {
         let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
@@ -97,6 +146,7 @@ struct VideoRecorderTests {
         }
         for index in 0..<15 {
             recorder.append(sampleBuffer: frame(Int64(index)))
+            recorder.append(sampleBuffer: audioSample(Int64(index)))
             RunLoop.main.run(until: Date().addingTimeInterval(0.01))
         }
         recorder.stopRecording {
@@ -108,7 +158,46 @@ struct VideoRecorderTests {
         let asset = AVURLAsset(url: second)
         check(!asset.tracks(withMediaType: .video).isEmpty, "Finalized output must contain a readable video track")
         check(asset.duration.seconds > 0, "Finalized video must have positive duration")
-        print("PASS: recorder reuse, real frames, finalized playable output and callback order")
+        check(asset.tracks(withMediaType: .audio).count == 1, "Authorized recording must retain its audio track")
+        print("PASS: recorder reuse, real audio/video frames, playable output and callback order")
+
+        let silent = directory.appendingPathComponent("silent.mp4")
+        var silentSaved: URL?
+        var silentFinished = false
+        try recorder.startRecording(to: silent, videoSettings: video, audioSettings: nil) { url in
+            check(Thread.isMainThread, "Silent file callback must run on main")
+            silentSaved = url
+            silentFinished = true
+        }
+        // Stray audio buffers must not create an audio track in a video-only recording.
+        for index in 0..<15 {
+            recorder.append(sampleBuffer: frame(Int64(index)))
+            recorder.append(sampleBuffer: audioSample(Int64(index)))
+            RunLoop.main.run(until: Date().addingTimeInterval(0.01))
+        }
+        var silentStopped = false
+        recorder.stopRecording {
+            check(silentFinished, "Silent file result must precede stop reply")
+            silentStopped = true
+        }
+        wait { silentStopped }
+        check(silentSaved == silent, "Video-only recording must finalize successfully")
+        let silentAsset = AVURLAsset(url: silent)
+        check(silentAsset.tracks(withMediaType: .video).count == 1, "Silent output must contain video")
+        check(silentAsset.tracks(withMediaType: .audio).isEmpty, "Silent output must not contain an audio track")
+        check(silentAsset.duration.seconds > 0, "Silent output must have positive duration")
+        print("PASS: video-only recording produces playable MP4 without an audio track")
+
+        let silentEmpty = directory.appendingPathComponent("silent-empty.mp4")
+        var silentEmptyFinished = false
+        try recorder.startRecording(to: silentEmpty, videoSettings: video, audioSettings: nil) { url in
+            check(url == nil, "Video-only recording without frames must not report success")
+            silentEmptyFinished = true
+        }
+        recorder.stopRecording {}
+        wait { silentEmptyFinished }
+        check(!FileManager.default.fileExists(atPath: silentEmpty.path), "Remove empty video-only output")
+        print("PASS: video-only empty output cleanup and reuse after audio recording")
 
         // AVAssetWriter must not overwrite an existing file or leave stale state on failure.
         do {

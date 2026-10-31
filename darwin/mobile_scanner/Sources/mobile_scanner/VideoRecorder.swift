@@ -20,7 +20,7 @@ class VideoRecorder {
     private var onFinished: ((URL?) -> Void)?
     private var stopCallbacks: [() -> Void] = []
 
-    func startRecording(to url: URL, videoSettings: [String: Any], audioSettings: [String: Any], onFinished: @escaping (URL?) -> Void) throws {
+    func startRecording(to url: URL, videoSettings: [String: Any], audioSettings: [String: Any]?, onFinished: @escaping (URL?) -> Void) throws {
         try queue.sync {
             guard writer == nil else { throw RecordingError.alreadyRecording }
             guard !FileManager.default.fileExists(atPath: url.path) else {
@@ -28,16 +28,16 @@ class VideoRecorder {
             }
             let newWriter = try AVAssetWriter(outputURL: url, fileType: .mp4)
             let video = AVAssetWriterInput(mediaType: .video, outputSettings: videoSettings)
-            let audio = AVAssetWriterInput(mediaType: .audio, outputSettings: audioSettings)
+            let audio = audioSettings.map { AVAssetWriterInput(mediaType: .audio, outputSettings: $0) }
             video.expectsMediaDataInRealTime = true
-            audio.expectsMediaDataInRealTime = true
-            guard newWriter.canAdd(video), newWriter.canAdd(audio) else {
+            audio?.expectsMediaDataInRealTime = true
+            guard newWriter.canAdd(video), audio.map({ newWriter.canAdd($0) }) ?? true else {
                 newWriter.cancelWriting()
                 try? FileManager.default.removeItem(at: url)
                 throw RecordingError.unsupportedSettings
             }
             newWriter.add(video)
-            newWriter.add(audio)
+            if let audio = audio { newWriter.add(audio) }
             writer = newWriter
             videoInput = video
             audioInput = audio

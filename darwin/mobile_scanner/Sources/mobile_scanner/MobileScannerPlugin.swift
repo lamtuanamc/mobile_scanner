@@ -27,9 +27,6 @@ public class MobileScannerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler,
     // The selected camera
     weak var videoDevice: AVCaptureDevice!
     
-    // The selected audio
-    weak var audioDevice: AVCaptureDevice!
-
     // Image to be sent to the texture
     var latestBuffer: CVImageBuffer!
 
@@ -410,8 +407,6 @@ public class MobileScannerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler,
         videoDevice.addObserver(self, forKeyPath: #keyPath(AVCaptureDevice.videoZoomFactor), options: [.new, .initial], context: nil)
 #endif
         
-               //audioDevice = AVCaptureDevice.default(for: AVMediaType.audio)!
-        audioDevice = AVCaptureDevice.default(AVCaptureDevice.DeviceType.builtInMicrophone, for: AVMediaType.audio, position: AVCaptureDevice.Position.unspecified)!
         captureSession!.beginConfiguration()
         
         // Check the zoom factor at switching from ultra wide camera to wide camera.
@@ -449,19 +444,6 @@ public class MobileScannerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler,
             return
         }
 
-        do {
-            let audioInput = try AVCaptureDeviceInput(device: audioDevice)
-            if captureSession!.canAddInput(audioInput) {
-                captureSession!.addInput(audioInput)
-                print("Added AVCaptureDeviceInput: audio")
-            } else
-            {
-                print("Could not add MIC!!!")
-            }
-        } catch {
-            print("Could not add MIC!!!")
-        }
-
         captureSession!.sessionPreset = AVCaptureSession.Preset.photo
         // }
         // Add video output.Add commentMore actions
@@ -483,15 +465,6 @@ public class MobileScannerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler,
             print("Could not add video data output")
         }
         
-        self.audioDataOutput = AVCaptureAudioDataOutput()
-        self.audioDataOutput.setSampleBufferDelegate(self, queue: DispatchQueue(label: "audio.queue"))
-        //Define your audio outputAdd commentMore actions
-        if captureSession!.canAddOutput(self.audioDataOutput) {
-            captureSession!.addOutput(self.audioDataOutput)
-        } else {
-            print("Could not add audio data output")
-        }
-
         let videoDeviceOrientation = self.getVideoOrientation()
         
 
@@ -924,6 +897,30 @@ public class MobileScannerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler,
         }
     }
     
+    private func configureRecordingAudio() -> Bool {
+        guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized,
+              let session = captureSession else { return false }
+        if session.inputs.contains(where: { $0.ports.contains(where: { $0.mediaType == .audio }) }) {
+            return session.outputs.contains(where: { $0 === audioDataOutput })
+        }
+        guard let device = AVCaptureDevice.default(for: .audio),
+              let input = try? AVCaptureDeviceInput(device: device) else { return false }
+
+        session.beginConfiguration()
+        defer { session.commitConfiguration() }
+        guard session.canAddInput(input) else { return false }
+        session.addInput(input)
+        if !session.outputs.contains(where: { $0 === audioDataOutput }) {
+            guard session.canAddOutput(audioDataOutput) else {
+                session.removeInput(input)
+                return false
+            }
+            audioDataOutput.setSampleBufferDelegate(self, queue: DispatchQueue(label: "audio.queue"))
+            session.addOutput(audioDataOutput)
+        }
+        return true
+    }
+
     func startRecording(_ call: FlutterMethodCall, _ result: @escaping FlutterResult) {
         let id = (call.arguments as? [String: Any])?["id"] as? String
         guard !hasActiveRecording else {
@@ -962,7 +959,7 @@ public class MobileScannerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler,
         do {
             try recorder.startRecording(to: outputURL,
                                         videoSettings: videoSettings,
-                                        audioSettings: audioSettings, onFinished: { [weak self] url in
+                                        audioSettings: configureRecordingAudio() ? audioSettings : nil, onFinished: { [weak self] url in
                 guard let self = self else { return }
                 let id = self.recordingId
                 self.recordingId = nil
