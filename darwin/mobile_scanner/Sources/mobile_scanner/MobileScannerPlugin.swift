@@ -464,6 +464,11 @@ public class MobileScannerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler,
         } else {
             print("Could not add video data output")
         }
+
+        // Attach an already granted microphone now so recording never reconfigures a running session.
+        if AVCaptureDevice.authorizationStatus(for: .audio) == .authorized {
+            _ = attachRecordingAudio(to: captureSession!)
+        }
         
         let videoDeviceOrientation = self.getVideoOrientation()
         
@@ -897,18 +902,11 @@ public class MobileScannerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler,
         }
     }
     
-    private func configureRecordingAudio() -> Bool {
-        guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized,
-              let session = captureSession else { return false }
-        if session.inputs.contains(where: { $0.ports.contains(where: { $0.mediaType == .audio }) }) {
-            return session.outputs.contains(where: { $0 === audioDataOutput })
-        }
+    // Only call when access is authorized: creating the input must never show the microphone prompt.
+    private func attachRecordingAudio(to session: AVCaptureSession) -> Bool {
         guard let device = AVCaptureDevice.default(for: .audio),
-              let input = try? AVCaptureDeviceInput(device: device) else { return false }
-
-        session.beginConfiguration()
-        defer { session.commitConfiguration() }
-        guard session.canAddInput(input) else { return false }
+              let input = try? AVCaptureDeviceInput(device: device),
+              session.canAddInput(input) else { return false }
         session.addInput(input)
         if !session.outputs.contains(where: { $0 === audioDataOutput }) {
             guard session.canAddOutput(audioDataOutput) else {
@@ -919,6 +917,18 @@ public class MobileScannerPlugin: NSObject, FlutterPlugin, FlutterStreamHandler,
             session.addOutput(audioDataOutput)
         }
         return true
+    }
+
+    // Reconfigures the running session only when access was granted after the camera started.
+    private func configureRecordingAudio() -> Bool {
+        guard AVCaptureDevice.authorizationStatus(for: .audio) == .authorized,
+              let session = captureSession else { return false }
+        if session.inputs.contains(where: { $0.ports.contains(where: { $0.mediaType == .audio }) }) {
+            return session.outputs.contains(where: { $0 === audioDataOutput })
+        }
+        session.beginConfiguration()
+        defer { session.commitConfiguration() }
+        return attachRecordingAudio(to: session)
     }
 
     func startRecording(_ call: FlutterMethodCall, _ result: @escaping FlutterResult) {
