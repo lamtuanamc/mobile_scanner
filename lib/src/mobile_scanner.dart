@@ -171,7 +171,11 @@ class _MobileScannerState extends State<MobileScanner>
     final Rect newScanWindow = calculateScanWindowRelativeToTextureInPercentage(
       widget.fit,
       widget.scanWindow!,
-      textureSize: scannerState.size,
+      textureSize: scanWindowTextureSize(
+        scannerState.size,
+        scannerState.deviceOrientation,
+        defaultTargetPlatform,
+      ),
       widgetSize: constraints.biggest,
     );
 
