@@ -1,4 +1,5 @@
 import 'package:flutter/painting.dart';
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:mobile_scanner/mobile_scanner.dart';
 import 'package:mobile_scanner/src/scan_window_calculation.dart';
@@ -237,6 +238,72 @@ void main() {
         expect(ratio.widthRatio, 1.0);
         expect(ratio.heightRatio, 1.0);
       });
+    });
+  });
+
+  group('scanWindowTextureSize', () {
+    // iOS reports a 1920x1440 video format as 1440x1920.
+    const reportedSize = Size(1440, 1920);
+
+    test('flips the reported size on iOS in landscape', () {
+      for (final DeviceOrientation orientation in [
+        DeviceOrientation.landscapeLeft,
+        DeviceOrientation.landscapeRight,
+      ]) {
+        expect(
+          scanWindowTextureSize(reportedSize, orientation, TargetPlatform.iOS),
+          const Size(1920, 1440),
+        );
+      }
+    });
+
+    test('keeps the reported size on iOS in portrait', () {
+      for (final DeviceOrientation orientation in [
+        DeviceOrientation.portraitUp,
+        DeviceOrientation.portraitDown,
+      ]) {
+        expect(
+          scanWindowTextureSize(reportedSize, orientation, TargetPlatform.iOS),
+          reportedSize,
+        );
+      }
+    });
+
+    test('keeps the reported size on Android', () {
+      expect(
+        scanWindowTextureSize(
+          reportedSize,
+          DeviceOrientation.landscapeLeft,
+          TargetPlatform.android,
+        ),
+        reportedSize,
+      );
+    });
+
+    test('scan window on a landscape iPad matches the drawn window', () {
+      const widgetSize = Size(1180, 700);
+      final Rect scanWindow = Rect.fromCenter(
+        center: widgetSize.center(Offset.zero),
+        width: 560,
+        height: 270,
+      );
+      final Size textureSize = scanWindowTextureSize(
+        reportedSize,
+        DeviceOrientation.landscapeLeft,
+        TargetPlatform.iOS,
+      );
+
+      final Rect actual = calculateScanWindowRelativeToTextureInPercentage(
+        BoxFit.cover,
+        scanWindow,
+        textureSize: textureSize,
+        widgetSize: widgetSize,
+      );
+
+      // BoxFit.cover scales the 1920x1440 buffer by 1180 / 1920.
+      const double scale = 1180 / 1920;
+      expect(actual.width * textureSize.width * scale, closeTo(560, 0.001));
+      expect(actual.height * textureSize.height * scale, closeTo(270, 0.001));
     });
   });
 }

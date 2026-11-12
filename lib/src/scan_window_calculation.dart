@@ -1,6 +1,29 @@
 import 'dart:math';
 
 import 'package:flutter/rendering.dart';
+import 'package:flutter/services.dart';
+
+/// The texture size to calculate the scan window against.
+///
+/// iOS always reports a portrait [reportedSize], but its video buffers follow
+/// the device orientation, so a landscape device needs the flipped size.
+/// Android checks the scan window against portrait frames natively, so its
+/// reported size is kept as is.
+Size scanWindowTextureSize(
+  Size reportedSize,
+  DeviceOrientation deviceOrientation,
+  TargetPlatform platform,
+) {
+  final bool isLandscape =
+      deviceOrientation == DeviceOrientation.landscapeLeft ||
+      deviceOrientation == DeviceOrientation.landscapeRight;
+
+  if (platform == TargetPlatform.iOS && isLandscape) {
+    return reportedSize.flipped;
+  }
+
+  return reportedSize;
+}
 
 /// Calculate the scan window rectangle relative to the texture size.
 ///
